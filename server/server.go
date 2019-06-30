@@ -180,6 +180,7 @@ func (c *Server) setupCommandQueue(logger log.Logger) error {
 
 		verifycertLogger := log.With(logger, "component", "verifycert")
 		_ = VerifyCertificateMiddleware(c.SCEPDepot, verifycertLogger)(mdmService)
+		mdmService = sentMW(c.CommandWebhookURL)(mdmService)
 	}
 	c.MDMService = mdmService
 
@@ -366,11 +367,17 @@ type sentMiddleware struct {
 	next   mdm.Service
 }
 
+type sentEvent struct {
+	Params       map[string]string `json:"url_params"`
+	RawPayload   []byte            `json:"raw_payload"`
+	EnrollmentID string            `json:"enrollment_id,omitempty"`
+}
+
 func (mw *sentMiddleware) Acknowledge(ctx context.Context, req mdm.AcknowledgeEvent) ([]byte, error) {
 	if req.Response.EnrollmentID == nil {
 		return mw.next.Acknowledge(ctx, req)
 	}
-	id, ok := req.Params["enrollment"]
+	_, ok := req.Params["enrollment"]
 	if !ok {
 		return mw.next.Acknowledge(ctx, req)
 	}
@@ -379,17 +386,20 @@ func (mw *sentMiddleware) Acknowledge(ctx context.Context, req mdm.AcknowledgeEv
 	if err != nil {
 		return nil, err
 	}
+	if payload == nil {
+		return payload, nil
+	}
 
 	var resp = struct {
-		Topic        string
-		EnrollmentID string
-		ID           string
-		Payload      []byte
+		Topic     string     `json:"topic"`
+		SentEvent *sentEvent `json:"sent_event"`
 	}{
-		Topic:        "mdm.SentPayload",
-		EnrollmentID: *req.Response.EnrollmentID,
-		ID:           id,
-		Payload:      payload,
+		Topic: "mdm.SentPayload",
+		SentEvent: &sentEvent{
+			Params:       req.Params,
+			EnrollmentID: *req.Response.EnrollmentID,
+			RawPayload:   payload,
+		},
 	}
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(&resp)

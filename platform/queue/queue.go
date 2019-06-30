@@ -242,7 +242,7 @@ func (db *Store) pollCommands(pubsub pubsub.PublishSubscriber) error {
 				if err == nil && byUDID != nil {
 					cmd = byUDID
 				}
-				newPayload, err := plist.Marshal(ev.Payload)
+				newPayload, err := plist.MarshalIndent(ev.Payload, "\t")
 				if err != nil {
 					level.Info(db.logger).Log("msg", "marshal event payload", "err", err)
 					continue
