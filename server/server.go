@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -174,10 +176,10 @@ func (c *Server) setupCommandQueue(logger log.Logger) error {
 		mdmService = block.RemoveMiddleware(c.RemoveDB)(mdmService)
 
 		udidauthLogger := log.With(logger, "component", "udidcertauth")
-		mdmService = device.UDIDCertAuthMiddleware(devDB, udidauthLogger)(mdmService)
+		_ = device.UDIDCertAuthMiddleware(devDB, udidauthLogger)(mdmService)
 
 		verifycertLogger := log.With(logger, "component", "verifycert")
-		mdmService = VerifyCertificateMiddleware(c.SCEPDepot, verifycertLogger)(mdmService)
+		_ = VerifyCertificateMiddleware(c.SCEPDepot, verifycertLogger)(mdmService)
 	}
 	c.MDMService = mdmService
 
@@ -348,4 +350,54 @@ func (c *Server) setupSCEP(logger log.Logger) error {
 	c.SCEPService = scep.NewLoggingService(logger, c.SCEPService)
 
 	return nil
+}
+
+func sentMW(u string) mdm.Middleware {
+	return func(next mdm.Service) mdm.Service {
+		return &sentMiddleware{
+			next:   next,
+			webURL: u,
+		}
+	}
+}
+
+type sentMiddleware struct {
+	webURL string
+	next   mdm.Service
+}
+
+func (mw *sentMiddleware) Acknowledge(ctx context.Context, req mdm.AcknowledgeEvent) ([]byte, error) {
+	if req.Response.EnrollmentID == nil {
+		return mw.next.Acknowledge(ctx, req)
+	}
+	id, ok := req.Params["enrollment"]
+	if !ok {
+		return mw.next.Acknowledge(ctx, req)
+	}
+
+	payload, err := mw.next.Acknowledge(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp = struct {
+		Topic        string
+		EnrollmentID string
+		ID           string
+		Payload      []byte
+	}{
+		Topic:        "mdm.SentPayload",
+		EnrollmentID: *req.Response.EnrollmentID,
+		ID:           id,
+		Payload:      payload,
+	}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(&resp)
+
+	http.Post(mw.webURL, "json", &buf)
+	return payload, err
+}
+
+func (mw *sentMiddleware) Checkin(ctx context.Context, req mdm.CheckinEvent) error {
+	return mw.next.Checkin(ctx, req)
 }
